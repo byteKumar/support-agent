@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: support
+          POSTGRES_PASSWORD: support
+          POSTGRES_DB: support_agent
+        ports: ["5435:5432"]
+        options: >-
+          --health-cmd "pg_isready -U support" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+      mailhog:
+        image: mailhog/mailhog:v1.0.1
+        ports: ["1025:1025", "8025:8025"]
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://support:support@localhost:5435/support_agent_test
+      LLM_PROVIDER: fake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+
+  eval-subset:
+    # Paid: runs only when the ANTHROPIC_API_KEY secret exists and the real
+    # scenario file is committed. Uses the 25-scenario stratified subset.
+    needs: test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: support
+          POSTGRES_PASSWORD: support
+          POSTGRES_DB: support_agent
+        ports: ["5435:5432"]
+        options: >-
+          --health-cmd "pg_isready -U support" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DATABASE_URL: postgresql+psycopg://support:support@localhost:5435/support_agent
+      LLM_PROVIDER: anthropic
+    steps:
+      - uses: actions/checkout@v4
+      - id: gate
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping eval subset: no ANTHROPIC_API_KEY secret"
+          elif [ ! -f evals/scenarios.jsonl ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping eval subset: evals/scenarios.jsonl not committed yet"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - if: steps.gate.outputs.run == 'true'
+        run: uv sync --frozen
+      - if: steps.gate.outputs.run == 'true'
+        run: uv run python -m support_agent.seed --reset --no-stripe
+      - if: steps.gate.outputs.run == 'true'
+        run: >-
+          uv run python -m support_agent.evals.harness
+          --scenarios evals/scenarios.jsonl --subset 25 --provider anthropic --yes
+          --out eval_results
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-subset
+          path: eval_results/

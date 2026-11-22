@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block body %}
+<h2>Refunds waiting for approval ({{ pending|length }})</h2>
+{% if pending %}
+<table>
+  <thead><tr><th>Ticket</th><th>Customer</th><th>Order</th><th>Refund</th><th>Agent's reason</th><th>Decision</th></tr></thead>
+  <tbody>
+  {% for row in pending %}{% include "_approval_row.html" %}{% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">Nothing waiting. Refunds above the auto-approve limit show up here.</p>
+{% endif %}
+
+<h2>Recent agent runs</h2>
+<table>
+  <thead><tr><th>Run</th><th>Ticket</th><th>Status</th><th>Variant</th><th>Steps</th><th>Tokens in/out</th><th>Cost</th></tr></thead>
+  <tbody>
+  {% for r in runs %}
+  <tr>
+    <td><a href="/admin/runs/{{ r.id }}">#{{ r.id }}</a></td>
+    <td>#{{ r.ticket_id }}</td>
+    <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
+    <td>{{ r.variant }}</td>
+    <td>{{ r.steps }}</td>
+    <td>{{ r.input_tokens }} / {{ r.output_tokens }}</td>
+    <td>${{ "%.5f"|format(r.cost_usd) }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7" class="muted">No runs yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

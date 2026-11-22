@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.id }}{% endblock %}
+{% block body %}
+<p><a href="/admin">&larr; back</a></p>
+<h2>Run #{{ run.id }} for ticket #{{ ticket.id }} <span class="pill {{ run.status }}">{{ run.status }}</span></h2>
+<p class="muted">model {{ run.model }} &middot; variant {{ run.variant }} &middot; {{ run.steps }} steps &middot;
+  {{ run.input_tokens }} in / {{ run.output_tokens }} out &middot; ${{ "%.5f"|format(run.cost_usd) }} &middot; trace {{ run.trace_id }}
+  {% if run.error %}&middot; error: {{ run.error }}{% endif %}</p>
+<h2>Tool calls</h2>
+<table>
+  <thead><tr><th>Step</th><th>Tool</th><th>Input</th><th>Result</th><th>ms</th></tr></thead>
+  <tbody>
+  {% for c in calls %}
+  <tr>
+    <td>{{ c.step }}</td>
+    <td>{{ c.name }} {% if c.is_error %}<span class="pill failed">error</span>{% endif %}</td>
+    <td><pre>{{ c.input | tojson(indent=1) }}</pre></td>
+    <td><pre>{{ c.output | tojson(indent=1) }}</pre></td>
+    <td>{{ "%.1f"|format(c.duration_ms) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<h2>Conversation</h2>
+{% for m in run.messages %}
+<div><strong>{{ m.role }}</strong><pre>{{ m.content if m.content is string else (m.content | tojson(indent=1)) }}</pre></div>
+{% endfor %}
+{% if run.final_text %}<h2>Final summary</h2><pre>{{ run.final_text }}</pre>{% endif %}
+{% endblock %}

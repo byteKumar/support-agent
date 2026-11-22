@@ -22,5 +22,28 @@ services:
       - "1025:1025"
       - "8025:8025"
 
+  api:
+    build: .
+    ports:
+      - "8002:8002"
+    depends_on:
+      db:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+psycopg://support:support@db:5432/support_agent
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+      # Defaults are free and safe: scripted fake LLM, fake payments.
+      LLM_PROVIDER: ${LLM_PROVIDER:-fake}
+      LLM_MODEL: ${LLM_MODEL:-claude-haiku-5-5}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-fake}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+      OTEL_CONSOLE: ${OTEL_CONSOLE:-0}
+
 volumes:
   pgdata:

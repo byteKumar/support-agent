@@ -1,0 +1,20 @@
+{% set a = row.a if row is defined else a %}{% set ticket = row.ticket if row is defined else ticket %}{% set order = row.order if row is defined else order %}{% set customer = row.customer if row is defined else customer %}
+<tr id="approval-{{ a.id }}">
+  <td>#{{ ticket.id }}<div class="ticket muted">{{ ticket.subject }}: {{ ticket.body[:300] }}</div></td>
+  <td>{{ customer.name }}<div class="muted">id {{ customer.id }}</div></td>
+  <td>#{{ order.id }} &middot; {{ order.status }}<div class="muted">total {{ order.total_cents|money }}</div></td>
+  <td><strong>{{ a.amount_cents|money }}</strong></td>
+  <td>{{ a.reason }}</td>
+  <td>
+    {% if a.status == "pending" %}
+    <form hx-target="#approval-{{ a.id }}" hx-swap="outerHTML">
+      <input type="text" name="note" placeholder="note (optional)">
+      <button class="approve" hx-post="/admin/approvals/{{ a.id }}/approve">Approve</button>
+      <button class="reject" hx-post="/admin/approvals/{{ a.id }}/reject">Reject</button>
+    </form>
+    {% else %}
+    <span class="pill {{ a.status }}">{{ a.status }}</span> by {{ a.decided_by }}{% if a.decision_note %}: {{ a.decision_note }}{% endif %}
+    <div class="muted">The agent run resumes with this decision.</div>
+    {% endif %}
+  </td>
+</tr>
