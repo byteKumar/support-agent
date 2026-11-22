@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from support_agent.config import Settings
 from support_agent.emailer import EmailRefused, Mailer
-from support_agent.models import Approval, Customer, Order, Refund, Ticket
+from support_agent.models import Approval, Customer, Order, Refund, Ticket, ToolCall
 from support_agent.payments import GatewayError, PaymentGateway
 from support_agent.policy import PolicyConfig, evaluate_refund
 
@@ -270,6 +270,20 @@ def _ticket_refund_used(ctx: ToolContext) -> bool:
     return bool(refunded or queued)
 
 
+def _policy_checked_this_run(ctx: ToolContext, order_id: int) -> bool:
+    """True if check_policy succeeded for this order earlier in the same agent run."""
+    if ctx.run_id is None:
+        return False
+    rows = ctx.session.scalars(
+        select(ToolCall).where(
+            ToolCall.run_id == ctx.run_id,
+            ToolCall.name == "check_policy",
+            ToolCall.is_error.is_(False),
+        )
+    ).all()
+    return any(r.input.get("order_id") == order_id for r in rows)
+
+
 def perform_refund(
     ctx: ToolContext, order: Order, amount: int, reason: str, approved_by: str | None = None
 ) -> dict:
@@ -326,6 +340,13 @@ def perform_refund(
 
 def issue_refund(ctx: ToolContext, inp: IssueRefundInput) -> dict | ToolOutcome:
     order = _owned_order(ctx, inp.order_id)
+    if ctx.settings.require_policy_check and not _policy_checked_this_run(ctx, order.id):
+        # REQUIRE_POLICY_CHECK=1 / the "improved" eval variant: the model must look before
+        # it moves money, so its explanation to the customer is based on the policy result.
+        raise ToolError(
+            "POLICY_CHECK_REQUIRED",
+            f"Call check_policy for order {order.id} before issue_refund.",
+        )
     if _ticket_refund_used(ctx):
         raise ToolError("TICKET_REFUND_LIMIT", "Policy allows at most one refund per ticket.")
     decision = evaluate_refund(order, inp.amount_cents, ctx.now, ctx.policy)

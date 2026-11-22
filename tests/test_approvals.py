@@ -194,3 +194,54 @@ def test_email_with_other_customers_address_blocked(session, settings):
         ctx, "send_email", {"subject": "Hi", "body": "Reply to avery.park1@example.com"}
     )
     assert not ok.is_error
+
+
+def test_require_policy_check_option(session_factory, settings):
+    import dataclasses
+
+    strict = dataclasses.replace(settings, require_policy_check=True)
+    skip = [
+        tool_turn(("issue_refund", {"order_id": 1, "amount_cents": 4500, "reason": "torn"})),
+        text_turn("done"),
+    ]
+    tid = new_ticket(session_factory, strict, 1, "refund order 1")
+    agent, _ = make_agent(session_factory, strict, skip)
+    run_id = agent.run_ticket(tid)
+    with session_factory() as s:
+        from support_agent.models import ToolCall
+
+        call = s.query(ToolCall).filter_by(run_id=run_id).one()
+        assert call.output["error"]["code"] == "POLICY_CHECK_REQUIRED"
+        assert s.query(Refund).filter_by(ticket_id=tid).count() == 0
+
+    wrong_order_checked = [
+        tool_turn(("check_policy", {"order_id": 2, "amount_cents": None})),
+        tool_turn(("issue_refund", {"order_id": 1, "amount_cents": 4500, "reason": "torn"})),
+        tool_turn(("check_policy", {"order_id": 1, "amount_cents": 4500})),
+        tool_turn(("issue_refund", {"order_id": 1, "amount_cents": 4500, "reason": "torn"})),
+        text_turn("done"),
+    ]
+    tid = new_ticket(session_factory, strict, 1, "refund order 1")
+    agent, _ = make_agent(session_factory, strict, wrong_order_checked)
+    run_id = agent.run_ticket(tid)
+    with session_factory() as s:
+        from support_agent.models import ToolCall
+
+        codes = [
+            (c.output.get("error") or {}).get("code")
+            for c in s.query(ToolCall).filter_by(run_id=run_id).order_by(ToolCall.id)
+        ]
+        assert codes == [None, "POLICY_CHECK_REQUIRED", None, None]
+        assert s.query(Refund).filter_by(ticket_id=tid).count() == 1
+
+
+def test_improved_variant_turns_on_policy_check(session_factory, settings):
+    tid = new_ticket(session_factory, settings, 1, "refund order 1")
+    script = [
+        tool_turn(("issue_refund", {"order_id": 1, "amount_cents": 4500, "reason": "torn"})),
+        text_turn("done"),
+    ]
+    agent, _ = make_agent(session_factory, settings, script)
+    agent.run_ticket(tid, variant="improved")
+    with session_factory() as s:
+        assert s.query(Refund).filter_by(ticket_id=tid).count() == 0

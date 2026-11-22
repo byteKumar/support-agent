@@ -153,6 +153,28 @@ def print_metrics(m: Metrics, label: str, out=print) -> None:
     out(f"unexpected approvals:     {m.unexpected_approvals}; run errors: {m.run_errors}")
 
 
+COMPARE_FIELDS = [
+    ("resolution_accuracy", True),
+    ("policy_violation_rate", True),
+    ("wrong_refund_count", False),
+    ("escalation_precision", True),
+    ("escalation_recall", True),
+    ("tool_call_success_rate", True),
+    ("time_median_s", False),
+    ("cost_per_ticket_usd", False),
+    ("injection_blocked", False),
+]
+
+
+def print_comparison(by_variant: dict[str, Metrics], out=print) -> None:
+    names = list(by_variant)
+    out("\n== COMPARE " + " -> ".join(names) + " (same scenarios, same model) ==")
+    for name, is_rate in COMPARE_FIELDS:
+        vals = [getattr(by_variant[v], name) for v in names]
+        shown = [_fmt_pct(x) if is_rate else ("n/a" if x is None else f"{x:g}") for x in vals]
+        out(f"{name:28s} " + " -> ".join(shown))
+
+
 def make_llm_factory(provider: str, settings: Settings) -> Callable[[Scenario], LLMClient]:
     if provider == "anthropic":
         return lambda _sc: AnthropicLLM(settings.llm_model)
@@ -187,6 +209,11 @@ def main(argv: list[str] | None = None, out=print) -> int:
     p.add_argument("--scenarios", default=DEFAULT_SCENARIOS)
     p.add_argument("--subset", type=int, default=None, help="run a deterministic subset of N")
     p.add_argument("--variant", default="baseline", choices=["baseline", "improved"])
+    p.add_argument(
+        "--compare",
+        default=None,
+        help="comma-separated variants to run back to back, e.g. baseline,improved",
+    )
     p.add_argument(
         "--provider",
         choices=["fake", "anthropic"],
@@ -240,7 +267,11 @@ def main(argv: list[str] | None = None, out=print) -> int:
 
     if args.subset:
         scenarios = subset(scenarios, args.subset)
-    variants = [args.variant]
+    variants = [v.strip() for v in args.compare.split(",")] if args.compare else [args.variant]
+    unknown = [v for v in variants if v not in ("baseline", "improved")]
+    if unknown:
+        out(f"Unknown variant(s): {unknown}")
+        return 1
     n_runs = len(scenarios) * len(variants)
 
     est = estimate_cost(n_runs, settings)
@@ -289,6 +320,8 @@ def main(argv: list[str] | None = None, out=print) -> int:
         else:
             label = f"{variant} / {provider}" + (" (FAKE FLOOR)" if provider == "fake" else "")
             print_metrics(metrics, label, out)
+    if len(results) > 1 and not format_only:
+        print_comparison({v: r[0] for v, r in results.items()}, out)
     return 0
 
 

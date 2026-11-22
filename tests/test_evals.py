@@ -287,3 +287,47 @@ def test_missing_scenarios_file(tmp_path):
     lines = []
     assert harness.main(["--scenarios", str(tmp_path / "nope.jsonl")], out=lines.append) == 1
     assert "HOW_TO_WRITE_SCENARIOS" in "\n".join(lines)
+
+
+def test_harness_compare_variants(engine, tmp_path):
+    p = _write(tmp_path, [_row(id="a"), _row(id="b")])
+    lines = []
+    code = harness.main(
+        [
+            "--scenarios",
+            str(p),
+            "--database-url",
+            TEST_DB_URL,
+            "--provider",
+            "fake",
+            "--compare",
+            "baseline,improved",
+            "--out",
+            str(tmp_path / "o"),
+        ],
+        out=lines.append,
+    )
+    text = "\n".join(lines)
+    assert code == 0
+    assert "COMPARE baseline -> improved" in text
+    assert len(list((tmp_path / "o").glob("*.json"))) == 2
+
+
+def test_compare_does_not_bypass_format_rule(engine, tmp_path):
+    lines = []
+    harness.main(
+        [
+            "--scenarios",
+            str(FORMAT),
+            "--database-url",
+            TEST_DB_URL,
+            "--provider",
+            "fake",
+            "--compare",
+            "baseline,improved",
+            "--out",
+            str(tmp_path),
+        ],
+        out=lines.append,
+    )
+    assert "COMPARE" not in "\n".join(lines)
