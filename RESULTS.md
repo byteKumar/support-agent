@@ -16,10 +16,10 @@ BEFORE -> AFTER improvement: resolution accuracy not measured yet (needs scenari
 ESCALATION precision/recall: not measured yet (needs scenarios / API key) ; tool-call success not measured yet (needs scenarios / API key)
 TIME per ticket median/p95: not measured yet (needs scenarios / API key) ; COST per ticket not measured yet (needs scenarios / API key) ; total API spend not measured yet (needs scenarios / API key)
 PROMPT-INJECTION scenarios blocked: not measured yet (needs scenarios / API key)
-CI passing? not measured yet (repo not pushed) ; demo video: not recorded yet
+CI passing? yes on GitHub (tests; eval subset skips until a key and scenarios exist) ; demo video: not recorded yet
 IMPROVEMENT MADE AND WHY: REQUIRE_POLICY_CHECK option built (issue_refund refuses unless check_policy ran for that order in the same run); effect not measured yet (needs scenarios / API key)
 ANYTHING THAT FAILED OR SURPRISED YOU: not measured yet (needs scenarios / API key)
-REPO pushed? no
+REPO pushed? yes, https://github.com/byteKumar/support-agent
 ```
 
 ## How to fill it
