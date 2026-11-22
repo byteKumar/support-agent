@@ -24,15 +24,23 @@ from typing import Any
 
 import anthropic
 from opentelemetry import trace
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from support_agent.config import Settings
 from support_agent.emailer import Mailer
 from support_agent.llm import LLMClient, LLMResponse
-from support_agent.models import AgentRun, Customer, Ticket, ToolCall
+from support_agent.models import AgentRun, Approval, Customer, Order, Ticket, ToolCall
 from support_agent.payments import PaymentGateway
-from support_agent.tools import TOOL_DEFINITIONS, ToolContext, execute_tool
+from support_agent.policy import evaluate_refund
+from support_agent.tools import (
+    TOOL_DEFINITIONS,
+    ToolContext,
+    ToolError,
+    execute_tool,
+    perform_refund,
+)
 
 MAX_TOKENS = 4000
 PENDING = "__PENDING_APPROVAL__"
@@ -174,6 +182,86 @@ class SupportAgent:
             run_id = run.id
         self._loop(run_id)
         return run_id
+
+    def resume(self, approval_id: int) -> int:
+        """Continue a paused run after a human decided on its approval.
+
+        The decision becomes the tool_result for the paused issue_refund call. On
+        approve, the policy is checked again (the order may have changed while the
+        run waited) before any money moves.
+        """
+        with self.d.session_factory() as s:
+            approval = s.get(Approval, approval_id)
+            if approval is None or approval.status not in {"approved", "rejected"}:
+                raise ValueError("approval is not decided")
+            run = s.get(AgentRun, approval.run_id)
+            if run.status != "awaiting_approval":
+                raise ValueError(f"run {run.id} is {run.status}, not awaiting_approval")
+            ticket = s.get(Ticket, run.ticket_id)
+            settings = self.settings_for(run.variant)
+            with self.tracer.start_as_current_span(
+                "approval.apply",
+                attributes={"approval.id": approval.id, "approval.status": approval.status},
+            ):
+                result, is_error = self._apply_decision(s, run, ticket, settings, approval)
+            call = s.scalar(
+                select(ToolCall).where(
+                    ToolCall.run_id == run.id, ToolCall.tool_use_id == approval.tool_use_id
+                )
+            )
+            if call is not None:
+                call.output = result
+                call.is_error = is_error
+            results = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": r["tool_use_id"],
+                    "content": json.dumps(result),
+                    "is_error": is_error,
+                }
+                if r["content"] == PENDING
+                else r
+                for r in run.pending_results
+            ]
+            messages = list(run.messages) + [{"role": "user", "content": results}]
+            run.pending_results = []
+            run.status = "running"
+            ticket.status = "escalated" if ticket.status == "escalated" else "in_progress"
+            self._save(s, run, messages)
+            run_id = run.id
+        self._loop(run_id)
+        return run_id
+
+    def _apply_decision(self, s, run, ticket, settings, approval) -> tuple[dict, bool]:
+        if approval.status == "rejected":
+            note = approval.decision_note or "A human reviewer rejected this refund."
+            return {
+                "ok": False,
+                "error": {"code": "APPROVAL_REJECTED", "message": note},
+            }, True
+        ctx = ToolContext(
+            session=s,
+            ticket=ticket,
+            settings=settings,
+            gateway=self.d.gateway,
+            mailer=self.d.mailer,
+            run_id=run.id,
+            tool_use_id=approval.tool_use_id,
+        )
+        order = s.get(Order, approval.order_id)
+        decision = evaluate_refund(order, approval.amount_cents, ctx.now, ctx.policy)
+        if not decision.eligible:
+            return {"ok": False, "error": {"code": decision.code, "message": decision.reason}}, True
+        savepoint = s.begin_nested()
+        try:
+            out = perform_refund(
+                ctx, order, approval.amount_cents, approval.reason, approval.decided_by
+            )
+            savepoint.commit()
+        except ToolError as exc:
+            savepoint.rollback()
+            return {"ok": False, "error": {"code": exc.code, "message": exc.message}}, True
+        return {"ok": True, **out, "approved_by": approval.decided_by}, False
 
     # ------------------------------------------------------------ internals
 

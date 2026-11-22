@@ -12,19 +12,20 @@ tests check that they match the pydantic models.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from support_agent.config import Settings
 from support_agent.emailer import EmailRefused, Mailer
-from support_agent.models import Customer, Order, Refund, Ticket
+from support_agent.models import Approval, Customer, Order, Refund, Ticket
 from support_agent.payments import GatewayError, PaymentGateway
 from support_agent.policy import PolicyConfig, evaluate_refund
 
@@ -115,6 +116,9 @@ class EscalateInput(_Strict):
 
 
 # ---------------------------------------------------------------- helpers
+
+
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -224,10 +228,46 @@ def check_policy(ctx: ToolContext, inp: CheckPolicyInput) -> dict:
 
 
 def _request_approval(ctx: ToolContext, order: Order, amount: int, reason: str) -> ToolOutcome:
-    raise ToolError(
-        "APPROVAL_REQUIRED",
-        "Refunds above the auto-approve limit need a human. Escalate this ticket.",
+    """Queue the refund for a human. The agent loop sees pending_approval_id and pauses."""
+    if ctx.run_id is None or ctx.tool_use_id is None:
+        raise ToolError(
+            "APPROVAL_NEEDS_RUN",
+            "Refunds above the auto-approve limit can only be requested from an agent run.",
+        )
+    approval = Approval(
+        run_id=ctx.run_id,
+        ticket_id=ctx.ticket.id,
+        order_id=order.id,
+        tool_use_id=ctx.tool_use_id,
+        amount_cents=amount,
+        reason=reason,
+        status="pending",
+        created_at=datetime.now(UTC),
     )
+    ctx.session.add(approval)
+    ctx.session.flush()
+    return ToolOutcome(
+        result={
+            "ok": True,
+            "status": "pending_approval",
+            "approval_id": approval.id,
+            "message": "Above the auto-approve limit; queued for a human. The run pauses.",
+        },
+        is_error=False,
+        pending_approval_id=approval.id,
+    )
+
+
+def _ticket_refund_used(ctx: ToolContext) -> bool:
+    refunded = ctx.session.scalar(
+        select(func.count(Refund.id)).where(Refund.ticket_id == ctx.ticket.id)
+    )
+    queued = ctx.session.scalar(
+        select(func.count(Approval.id)).where(
+            Approval.ticket_id == ctx.ticket.id, Approval.status.in_(["pending", "approved"])
+        )
+    )
+    return bool(refunded or queued)
 
 
 def perform_refund(
@@ -286,6 +326,8 @@ def perform_refund(
 
 def issue_refund(ctx: ToolContext, inp: IssueRefundInput) -> dict | ToolOutcome:
     order = _owned_order(ctx, inp.order_id)
+    if _ticket_refund_used(ctx):
+        raise ToolError("TICKET_REFUND_LIMIT", "Policy allows at most one refund per ticket.")
     decision = evaluate_refund(order, inp.amount_cents, ctx.now, ctx.policy)
     if not decision.eligible:
         raise ToolError(decision.code, decision.reason, decision=decision.as_dict())
@@ -307,6 +349,15 @@ def update_order(ctx: ToolContext, inp: UpdateOrderInput) -> dict:
 
 def send_email(ctx: ToolContext, inp: SendEmailInput) -> dict:
     customer = ctx.session.get(Customer, ctx.ticket.customer_id)
+    foreign = {e.lower() for e in EMAIL_RE.findall(f"{inp.subject}\n{inp.body}")} - {
+        customer.email.lower(),
+        ctx.settings.mail_from.lower(),
+    }
+    if foreign:
+        raise ToolError(
+            "DATA_LEAK_BLOCKED",
+            "Emails may not contain other people's email addresses.",
+        )
     try:
         message_id = ctx.mailer.send(customer.email, inp.subject, inp.body)
     except EmailRefused as exc:
